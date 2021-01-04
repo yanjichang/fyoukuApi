@@ -3,6 +3,7 @@ package controllers
 import (
 	"crypto/md5"
 	"encoding/hex"
+	"time"
 
 	"github.com/astaxie/beego"
 )
@@ -33,4 +34,9 @@ func MD5V(password string) string {
 	h := md5.New()
 	h.Write([]byte(password + beego.AppConfig.String("md5code")))
 	return hex.EncodeToString(h.Sum((nil)))
+}
+
+func DateFormat(times int64) string {
+	videoTime := time.Unix(times, 0)
+	return videoTime.Format("2006-01-02")
 }
