@@ -2,6 +2,7 @@ package models
 
 import (
 	"github.com/astaxie/beego/orm"
+	"time"
 )
 
 type Video struct {
@@ -115,6 +116,43 @@ func GetVideoEpisodesList(videoId int)(int64, []Episodes, error){
 	num, err := o.Raw("select id,title,add_time,num,play_url,comment from video_episodes where video_id=? order by num asc", videoId).QueryRows(&episodes)
 
 	return num, episodes, err
+}
+
+//我的视频
+func GetUserVideo(uid int) (int64, []VideoData, error ){
+	o := orm.NewOrm()
+	var videos []VideoData
+	num,err := o.Raw("select id,title,sub_title,img,img1,add_time,episodes_count,is_end from video where user_id=? order by add_time desc", uid).QueryRows(&videos)
+	return num,videos,err
+}
+
+//保存视频
+func SaveVideo(title string, subTitle string, channelId int, regionId int,typeId int,playUrl string,uid int,aliyunVideoId string) error{
+	o := orm.NewOrm()
+	var video Video
+	time := time.Now().Unix()
+	video.Title = title
+	video.SubTitle = subTitle
+	video.AddTime = time
+	video.Img = ""
+	video.Img1 = ""
+	video.EpisodesCount = 1
+	video.IsEnd = 1
+	video.ChannelId = channelId
+	video.Status = 1
+	video.RegionId = regionId
+	video.TypeId = typeId
+	video.EpisodesUpdateTime = time
+	video.Comment = 0
+	video.UserId = uid
+	videoId,err := o.Insert(&video)
+	if err == nil{
+		if aliyunVideoId != "" {
+			playUrl = ""
+		}
+		_, err = o.Raw("INSERT INTO video_episodes (title,add_time,num,video_id,play_url,status,comment,aliyun_video_id) VALUES (?,?,?,?,?,?,?,?)", subTitle, time, 1, videoId, playUrl, 1, 0, aliyunVideoId).Exec()
+	}
+	return err
 }
 
 //频道排行榜
