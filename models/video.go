@@ -1,7 +1,11 @@
 package models
 
 import (
+	"fmt"
+	redisClient "fyoukuApi/services/redis"
 	"github.com/astaxie/beego/orm"
+	"github.com/garyburd/redigo/redis"
+	"strconv"
 	"time"
 )
 
@@ -41,6 +45,7 @@ type Episodes struct {
 	Num int
 	PlayUrl string
 	Comment int
+	AliyunVideoId string
 }
 
 func init() {
@@ -103,17 +108,48 @@ func GetChannelVideoList(channelId int, regionId int, typeId int, end string, so
 	return nums, videos, err
 }
 
+//视频详情
 func GetVideoInfo(videoId int) (Video, error) {
 	o := orm.NewOrm()
 	var video Video
 	err := o.Raw("select * from video where id=? limit 1", videoId).QueryRow(&video)
 	return video,err
 }
+//Redis缓存-视频详情
+func RedisGetVideoInfo(videoId int) (Video, error) {
+	var video Video
+	conn := redisClient.Connect()
+	defer conn.Close()
+
+	redisKey := "video:id:"+strconv.Itoa(videoId)
+	exists,err := redis.Bool(conn.Do("exists",redisKey))
+	if exists {
+		fmt.Println("1")
+		res,_ := redis.Values(conn.Do("hgetall",redisKey))
+		err = redis.ScanStruct(res,&video)
+	} else{
+		fmt.Println("2")
+
+		o := orm.NewOrm()
+		err := o.Raw("select * from video where id=? limit 1", videoId).QueryRow(&video)
+		if err == nil {
+			_, err := conn.Do("hmset", redis.Args{redisKey}.AddFlat(video)...)
+
+			if err == nil {
+				conn.Do("expire", redisKey,86400)
+			}else{
+				fmt.Println(err)
+			}
+		}
+
+	}
+	return video,err
+}
 
 func GetVideoEpisodesList(videoId int)(int64, []Episodes, error){
 	o := orm.NewOrm()
 	var episodes []Episodes
-	num, err := o.Raw("select id,title,add_time,num,play_url,comment from video_episodes where video_id=? order by num asc", videoId).QueryRows(&episodes)
+	num, err := o.Raw("select id,title,add_time,num,play_url,aliyun_video_id,comment from video_episodes where video_id=? order by num asc", videoId).QueryRows(&episodes)
 
 	return num, episodes, err
 }
@@ -152,6 +188,13 @@ func SaveVideo(title string, subTitle string, channelId int, regionId int,typeId
 		}
 		_, err = o.Raw("INSERT INTO video_episodes (title,add_time,num,video_id,play_url,status,comment,aliyun_video_id) VALUES (?,?,?,?,?,?,?,?)", subTitle, time, 1, videoId, playUrl, 1, 0, aliyunVideoId).Exec()
 	}
+	return err
+}
+
+func SaveAliyunVideo(videoId string, log string) error{
+	o := orm.NewOrm()
+	_,err := o.Raw("insert into aliyun_video (video_id, log, add_time) values (?,?,?)",videoId,log,time.Now().Unix()).Exec()
+	fmt.Println(err)
 	return err
 }
 

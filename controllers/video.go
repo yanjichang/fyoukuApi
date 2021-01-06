@@ -186,7 +186,7 @@ func (this *VideoController) VideoInfo(){
 		this.ServeJSON()
 	}
 
-	video, err := models.GetVideoInfo(videoId)
+	video, err := models.RedisGetVideoInfo(videoId)
 	if err == nil{
 		this.Data["json"] = ReturnSuccess(0, "success", video, 1)
 		this.ServeJSON()
