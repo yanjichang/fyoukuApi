@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"fmt"
 	redisClient "fyoukuApi/services/redis"
 	"github.com/astaxie/beego/orm"
@@ -108,28 +109,19 @@ func GetChannelVideoList(channelId int, regionId int, typeId int, end string, so
 	return nums, videos, err
 }
 
-//视频详情
-func GetVideoInfo(videoId int) (Video, error) {
-	o := orm.NewOrm()
-	var video Video
-	err := o.Raw("select * from video where id=? limit 1", videoId).QueryRow(&video)
-	return video,err
-}
-//Redis缓存-视频详情
+//Redis缓存优化-视频详情
 func RedisGetVideoInfo(videoId int) (Video, error) {
 	var video Video
-	conn := redisClient.Connect()
+	conn := redisClient.PoolConnect()
 	defer conn.Close()
 
 	redisKey := "video:id:"+strconv.Itoa(videoId)
 	exists,err := redis.Bool(conn.Do("exists",redisKey))
 	if exists {
-		fmt.Println("1")
 		res,_ := redis.Values(conn.Do("hgetall",redisKey))
 		err = redis.ScanStruct(res,&video)
-	} else{
-		fmt.Println("2")
 
+	} else{
 		o := orm.NewOrm()
 		err := o.Raw("select * from video where id=? limit 1", videoId).QueryRow(&video)
 		if err == nil {
@@ -137,8 +129,6 @@ func RedisGetVideoInfo(videoId int) (Video, error) {
 
 			if err == nil {
 				conn.Do("expire", redisKey,86400)
-			}else{
-				fmt.Println(err)
 			}
 		}
 
@@ -146,11 +136,43 @@ func RedisGetVideoInfo(videoId int) (Video, error) {
 	return video,err
 }
 
-func GetVideoEpisodesList(videoId int)(int64, []Episodes, error){
-	o := orm.NewOrm()
-	var episodes []Episodes
-	num, err := o.Raw("select id,title,add_time,num,play_url,aliyun_video_id,comment from video_episodes where video_id=? order by num asc", videoId).QueryRows(&episodes)
+//Redis缓存优化-视频剧集
+func RedisGetVideoEpisodesList(videoId int)(int64, []Episodes, error){
+	var (
+		episodes []Episodes
+		num int64
+		err error
+	)
+	conn := redisClient.PoolConnect()
+	defer conn.Close()
 
+	redisKey := "video:episodes:videoId:"+strconv.Itoa(videoId)
+	exists,err := redis.Bool(conn.Do("exists",redisKey))
+	if exists{
+		num,err = redis.Int64(conn.Do("llen",redisKey))
+		if err == nil{
+			values,_ := redis.Values(conn.Do("lrange", redisKey, "0", "-1"))
+			var episodesInfo Episodes
+			for _,v :=range values{
+				err = json.Unmarshal(v.([]byte),&episodesInfo)
+				if err == nil{
+					episodes = append(episodes, episodesInfo)
+				}
+			}
+		}
+	}else{
+		o := orm.NewOrm()
+		num, err = o.Raw("select id,title,add_time,num,play_url,aliyun_video_id,comment from video_episodes where video_id=? order by num asc", videoId).QueryRows(&episodes)
+		if err == nil {
+			for _,v := range episodes {
+				jsonValue,err := json.Marshal(v)
+				if err == nil{
+					conn.Do("rpush",redisKey,jsonValue)
+				}
+			}
+			conn.Do("expire", redisKey, 86400)
+		}
+	}
 	return num, episodes, err
 }
 
@@ -198,6 +220,120 @@ func SaveAliyunVideo(videoId string, log string) error{
 	return err
 }
 
+//Redis缓存优化-频道排行榜
+func RedisGetChannelTop(channelId int)(int64, []VideoData, error){
+	var (
+		videos []VideoData
+		num int64
+	)
+	conn := redisClient.PoolConnect()
+	defer conn.Close()
+
+	redisKey := "video:top:channel:channelId:"+strconv.Itoa(channelId)
+	exists,err := redis.Bool(conn.Do("exists",redisKey))
+	if exists {
+		num = 0
+		res,_ := redis.Values(conn.Do("zrevrange",redisKey, "0", "10", "WITHSCORES"))
+		for k,v := range res{
+			if k%2 == 0{
+				videoId,err := strconv.Atoi(string(v.([]byte)))
+				videoInfo,err := RedisGetVideoInfo(videoId)
+				if err == nil{
+					var videoDataInfo VideoData
+					videoDataInfo.Id = videoInfo.Id
+					videoDataInfo.Img = videoInfo.Img
+					videoDataInfo.Img1 = videoInfo.Img1
+					videoDataInfo.IsEnd = videoInfo.IsEnd
+					videoDataInfo.SubTitle = videoInfo.SubTitle
+					videoDataInfo.Title = videoInfo.Title
+					videoDataInfo.AddTime = videoInfo.AddTime
+					videoDataInfo.Comment = videoInfo.Comment
+					videoDataInfo.EpisodesCount = videoInfo.EpisodesCount
+					videos = append(videos, videoDataInfo)
+					num++
+				}
+			}
+		}
+
+	}else{
+		o := orm.NewOrm()
+		num,err = o.Raw("select id,title,sub_title,img,img1,add_time,episodes_count,is_end from video where status=1 and channel_id=? order by comment desc limit 10", channelId).QueryRows(&videos)
+		if err == nil{
+			for _,v := range videos{
+				conn.Do("zadd", redisKey, v.Comment, v.Id)
+			}
+			conn.Do("expire", redisKey, 86400*30)
+		}
+	}
+
+
+	return num,videos,err
+}
+
+//Redis缓存优化-类型排行榜
+func RedisGetTypeTop(typeId int)(int64, []VideoData, error){
+	var (
+		videos []VideoData
+		num int64
+	)
+	conn := redisClient.PoolConnect()
+	defer conn.Close()
+
+	redisKey := "video:top:type:typeId:"+strconv.Itoa(typeId)
+	exists,err := redis.Bool(conn.Do("exists",redisKey))
+	if exists{
+		num = 0
+		res,_ := redis.Values(conn.Do("zrevrange",redisKey, "0", "10", "WITHSCORES"))
+		for k,v := range res{
+			if k%2 == 0{
+				videoId,err := strconv.Atoi(string(v.([]byte)))
+				videoInfo,err := RedisGetVideoInfo(videoId)
+				if err == nil{
+					var videoDataInfo VideoData
+					videoDataInfo.Id = videoInfo.Id
+					videoDataInfo.Img = videoInfo.Img
+					videoDataInfo.Img1 = videoInfo.Img1
+					videoDataInfo.IsEnd = videoInfo.IsEnd
+					videoDataInfo.SubTitle = videoInfo.SubTitle
+					videoDataInfo.Title = videoInfo.Title
+					videoDataInfo.AddTime = videoInfo.AddTime
+					videoDataInfo.Comment = videoInfo.Comment
+					videoDataInfo.EpisodesCount = videoInfo.EpisodesCount
+					videos = append(videos, videoDataInfo)
+					num++
+				}
+			}
+		}
+	}else{
+		o := orm.NewOrm()
+		num,err = o.Raw("select id,title,sub_title,img,img1,add_time,episodes_count,is_end from video where status=1 and type_id=? order by comment desc limit 10", typeId).QueryRows(&videos)
+		if err == nil{
+			for _,v := range videos{
+				conn.Do("zadd", redisKey, v.Comment, v.Id)
+			}
+			conn.Do("expire", redisKey, 86400*30)
+		}
+	}
+
+	return num,videos,err
+}
+
+
+//视频详情
+func GetVideoInfo(videoId int) (Video, error) {
+	o := orm.NewOrm()
+	var video Video
+	err := o.Raw("select * from video where id=? limit 1", videoId).QueryRow(&video)
+	return video,err
+}
+//视频剧集
+func GetVideoEpisodesList(videoId int)(int64, []Episodes, error){
+	o := orm.NewOrm()
+	var episodes []Episodes
+	num, err := o.Raw("select id,title,add_time,num,play_url,aliyun_video_id,comment from video_episodes where video_id=? order by num asc", videoId).QueryRows(&episodes)
+
+	return num, episodes, err
+}
 //频道排行榜
 func GetChannelTop(channelId int)(int64, []VideoData, error){
 	o := orm.NewOrm()
@@ -205,7 +341,6 @@ func GetChannelTop(channelId int)(int64, []VideoData, error){
 	num,err := o.Raw("select id,title,sub_title,img,img1,add_time,episodes_count,is_end from video where status=1 and channel_id=? order by comment desc limit 10", channelId).QueryRows(&videos)
 	return num,videos,err
 }
-
 //类型排行榜
 func GetTypeTop(typeId int)(int64, []VideoData, error){
 	o := orm.NewOrm()

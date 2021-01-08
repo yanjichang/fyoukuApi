@@ -205,7 +205,7 @@ func (this *VideoController) VideoEpisodesList(){
 		this.ServeJSON()
 	}
 
-	num, episodes, err := models.GetVideoEpisodesList(videoId)
+	num, episodes, err := models.RedisGetVideoEpisodesList(videoId)
 	if err == nil{
 		this.Data["json"] = ReturnSuccess(0, "success", episodes, num)
 		this.ServeJSON()

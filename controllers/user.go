@@ -86,7 +86,7 @@ func (this *UserController) LoginDo() {
 }
 
 
-//批量发送通知消息
+//批量发送通知消息 1:原始版本 2：使用队列优化版本
 // @router /send/message [*]
 func (this *UserController) SendMessageDo(){
 	uids := this.GetString("uids")
@@ -106,7 +106,7 @@ func (this *UserController) SendMessageDo(){
 		uidConfig := strings.Split(uids, ",")
 		for _,v := range uidConfig{
 			userId,_ := strconv.Atoi(v)
-			models.SendMessageUser(userId, messageId)
+			models.SendMessageUserMq(userId, messageId)
 		}
 		this.Data["json"] = ReturnSuccess(0,"发送成功", "", 1)
 		this.ServeJSON()
